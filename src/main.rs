@@ -67,10 +67,14 @@ fn handle(file: &Path) -> ExitCode {
 
     match installer::install(file) {
         Ok(installed) => {
-            let _ = kdialog::msgbox(
-                "AppImage Manager",
-                &format!("«{}» installata con successo.", installed.display_name),
-            );
+            // Compose the success message, appending the XDG hint when the
+            // environment would hide the menu entry.
+            let mut msg = format!("«{}» installata con successo.", installed.display_name);
+            if let Some(warn) = &installed.xdg_warning {
+                msg.push_str("\n\n");
+                msg.push_str(warn);
+            }
+            let _ = kdialog::msgbox("AppImage Manager", &msg);
             // Launch in the background (best-effort).
             if let Err(e) = launcher::launch(&installed.binary) {
                 eprintln!("warn: avvio fallito: {e}");
@@ -95,6 +99,9 @@ fn install_silent(file: &Path) -> ExitCode {
                 installed.display_name,
                 installed.binary.display()
             );
+            if let Some(warn) = &installed.xdg_warning {
+                eprintln!("\nAVVISO: {warn}");
+            }
             ExitCode::SUCCESS
         }
         Err(e) => {

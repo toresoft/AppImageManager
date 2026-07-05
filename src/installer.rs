@@ -74,6 +74,10 @@ pub struct InstalledApp {
     /// Path of the generated `.desktop` file.
     #[allow(dead_code)]
     pub desktop: PathBuf,
+    /// Non-empty when KDE may not see the menu entry because `~/.local/share`
+    /// is missing from `XDG_DATA_DIRS`. Carries a user-facing hint.
+    #[allow(dead_code)]
+    pub xdg_warning: Option<String>,
 }
 
 /// Where per-user integration files live.
@@ -142,12 +146,19 @@ fn install_from_metadata(
     // installs, in which case we proceed).
     let _ = run_helper("update-desktop-database", [dirs.applications.as_os_str()]);
     let _ = refresh_icon_cache();
+    // KDE reads .desktop entries only from the directories listed in
+    // XDG_DATA_DIRS (plus the system default). If ~/.local/share is missing
+    // from it, the menu entry we just wrote would be invisible until the user
+    // fixes their environment. We rebuild the KDE sycoca cache with the
+    // correct path so the entry shows up immediately.
+    let xdg_warning = ensure_kde_sees_user_applications(&dirs);
 
     Ok(InstalledApp {
         name,
         display_name,
         binary: bin_path,
         desktop: desktop_path,
+        xdg_warning,
     })
 }
 
@@ -327,6 +338,74 @@ fn refresh_icon_cache() -> Result<(), (String, String)> {
     run_helper("gtk-update-icon-cache", [theme_dir.as_os_str()])
 }
 
+/// Make sure KDE will actually pick up the `.desktop` we wrote under
+/// `~/.local/share/applications`.
+///
+/// KDE Plasma only scans the directories listed in `XDG_DATA_DIRS` (plus the
+/// compiled-in system default) when building its menu cache (ksycoca). The
+/// freedesktop spec says `~/.local/share` should be consulted regardless, but
+/// in practice some environments — notably when an AppImage prepends its own
+/// `usr/share` to `XDG_DATA_DIRS` — end up without `~/.local/share` in the
+/// list, and the menu entry we just created stays invisible.
+///
+/// This function detects that situation and, as a remedy, rebuilds the KDE
+/// sycoca cache with `~/.local/share` explicitly prepended to `XDG_DATA_DIRS`,
+/// so the entry appears immediately. It also returns a user-facing hint when
+/// the environment needs a permanent fix.
+fn ensure_kde_sees_user_applications(dirs: &Dirs) -> Option<String> {
+    let local_share = dirs
+        .applications
+        .parent()
+        .expect("applications has no parent");
+    let local_share_str = local_share.to_string_lossy().to_string();
+
+    let in_xdg = std::env::var_os("XDG_DATA_DIRS")
+        .map(|v| v.to_string_lossy().split(':').any(|p| p == local_share_str))
+        .unwrap_or(false);
+
+    if in_xdg {
+        // Environment is fine: just refresh the cache normally.
+        rebuild_kde_sycoca(None);
+        return None;
+    }
+
+    // `~/.local/share` is NOT in XDG_DATA_DIRS. Rebuild the cache with it
+    // prepended so our entry is picked up for the current session.
+    let new_xdg = format!(
+        "{local_share_str}:{}",
+        std::env::var("XDG_DATA_DIRS").unwrap_or_default()
+    );
+    rebuild_kde_sycoca(Some(&new_xdg));
+
+    Some(format!(
+        "KDE potrebbe non mostrare la voce di menù perché «{path}» non è in XDG_DATA_DIRS.\n\
+         Per renderlo permanente, aggiungi questa riga a ~/.bash_profile o ~/.profile:\n\n\
+         export XDG_DATA_DIRS=\"$HOME/.local/share:$XDG_DATA_DIRS\"\n\n\
+         (La voce è già visibile nella sessione corrente.)",
+        path = local_share_str
+    ))
+}
+
+/// Rebuild the KDE service-type cache (ksycoca), optionally overriding
+/// `XDG_DATA_DIRS` for the rebuild. Best-effort: silently ignores missing
+/// `kbuildsycoca` (non-KDE systems) or failures.
+fn rebuild_kde_sycoca(xdg_override: Option<&str>) {
+    for bin in ["kbuildsycoca6", "kbuildsycoca5"] {
+        let mut cmd = Command::new(bin);
+        cmd.arg("--noincremental");
+        if let Some(xdg) = xdg_override {
+            cmd.env("XDG_DATA_DIRS", xdg);
+        }
+        // Suppress output; this is best-effort.
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        if cmd.status().is_ok() {
+            return;
+        }
+    }
+}
+
 /// List installed AppImages (those whose .desktop has our marker).
 pub fn list() -> io::Result<Vec<InstalledApp>> {
     let dirs = Dirs::ensure()?;
@@ -363,6 +442,7 @@ pub fn list() -> io::Result<Vec<InstalledApp>> {
             display_name,
             binary,
             desktop: path,
+            xdg_warning: None,
         });
     }
     Ok(out)
