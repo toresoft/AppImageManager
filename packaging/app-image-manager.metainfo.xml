@@ -49,6 +49,14 @@
     <keyword>menu</keyword>
   </keywords>
   <releases>
+    <release version="0.1.1" date="2026-07-06">
+      <description>
+        <p>Bugfix release.</p>
+        <ul>
+          <li>The installer now ensures KDE picks up the menu entry when <code>~/.local/share</code> is missing from <code>XDG_DATA_DIRS</code> (it rebuilds ksycoca with the correct path and shows a user-facing hint with the permanent fix).</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-07-05">
       <description>
         <p>Initial release.</p>
