@@ -1,0 +1,25 @@
+#!/bin/sh
+# Debian prerm: deregister AppImage Manager from the MIME defaults BEFORE the
+# package files are removed (postrm would run too late, when the helper is
+# already gone). On upgrade ($1 = upgrade), we leave the registration in place
+# so the new version's postinst can re-add it without a flicker.
+set -e
+
+HELPER="/usr/lib/app-image-manager/mime-register.sh"
+
+case "$1" in
+    remove)
+        if [ -x "$HELPER" ]; then
+            "$HELPER" remove || {
+                echo "app-image-manager: MIME deregistration failed, continuing" >&2
+            }
+        fi
+        ;;
+    upgrade|deconfigure|failed-upgrade)
+        # Keep the registration; the new package's postinst will refresh it.
+        :
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

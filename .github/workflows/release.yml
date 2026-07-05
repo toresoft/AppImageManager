@@ -1,0 +1,202 @@
+name: release
+
+# Build the binary, run tests, and produce .deb (Ubuntu) and .rpm (Fedora 44)
+# packages for x86_64. Artifacts are uploaded on every push/PR; a GitHub
+# Release with the packages attached is created when a tag (v*) is pushed.
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # Build + test on Ubuntu (the baseline). Produces the tested binary that
+  # the deb job reuses, and a sanity-check artifact.
+  # ─────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build & test (ubuntu-22.04, amd64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry + build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with clippy
+        run: cargo clippy --all-targets
+
+      - name: Run tests
+        run: cargo test --all
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Smoke-test the binary
+        run: |
+          ./target/release/app-image-manager --version
+          ./target/release/app-image-manager --help | head -5
+
+      - name: Upload release binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-image-manager-amd64-binary
+          path: target/release/app-image-manager
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Debian/Ubuntu package via cargo-deb. Built on ubuntu-22.04 so the glibc
+  # baseline is broadly compatible (22.04 ships glibc 2.35; binary runs on
+  # 22.04, 24.04 and later).
+  # ─────────────────────────────────────────────────────────────────────────
+  deb:
+    name: Build .deb (ubuntu, amd64)
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --locked
+
+      - name: Build .deb package
+        # cargo-deb builds in release by default and picks up the
+        # [package.metadata.deb] section from Cargo.toml.
+        run: cargo deb
+
+      - name: Inspect .deb contents
+        run: |
+          set -euo pipefail
+          DEB=$(find target/debian -name '*.deb' | head -1)
+          echo "Built: $DEB"
+          dpkg-deb --info "$DEB" || true
+          echo "--- contents ---"
+          dpkg-deb -c "$DEB"
+
+      - name: Rename artifact to a stable name
+        run: |
+          DEB=$(find target/debian -name '*.deb' | head -1)
+          cp "$DEB" "app-image-manager_${GITHUB_REF_NAME:-dev}_amd64.deb"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-image-manager-amd64-deb
+          path: app-image-manager_*_amd64.deb
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Fedora package via cargo-generate-rpm. MUST run inside a fedora:44
+  # container so the produced .rpm links against Fedora 44's glibc and is
+  # installable there. We can't use the rust-toolchain action inside a
+  # container image without extra setup, so we install Rust via Fedora's
+  # rustup package.
+  # ─────────────────────────────────────────────────────────────────────────
+  rpm:
+    name: Build .rpm (fedora 44, amd64)
+    needs: build
+    runs-on: ubuntu-22.04
+    container:
+      image: fedora:44
+    steps:
+      - name: Install build dependencies
+        # rustup gives us a recent, cargo-install-compatible toolchain (the
+        # cargo-generate-rpm crate requires a reasonably new Rust).
+        run: |
+          set -euo pipefail
+          dnf install -y rustup cargo make gcc pkgconf-pkg-config git findutils
+          # Bootstrap the default stable toolchain non-interactively.
+          rustup-init -y --profile minimal --default-toolchain stable
+          echo "source $HOME/.cargo/env" >> "$HOME/.bashrc"
+
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Build .rpm package
+        # Picks up [package.metadata.generate-rpm] from Cargo.toml.
+        run: cargo generate-rpm
+
+      - name: Inspect .rpm contents
+        run: |
+          set -euo pipefail
+          RPM=$(find target/generate-rpm -name '*.rpm' | head -1)
+          echo "Built: $RPM"
+          rpm -qpi "$RPM" || true
+          echo "--- contents ---"
+          rpm -qpl "$RPM"
+
+      - name: Rename artifact to a stable name
+        run: |
+          RPM=$(find target/generate-rpm -name '*.rpm' | head -1)
+          cp "$RPM" "app-image-manager_${GITHUB_REF_NAME:-dev}_x86_64.rpm"
+
+      - name: Upload .rpm artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-image-manager-x86_64-rpm
+          path: app-image-manager_*_x86_64.rpm
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # On tag push (v*), publish a GitHub Release with the .deb and .rpm attached.
+  # ─────────────────────────────────────────────────────────────────────────
+  release:
+    name: Publish GitHub Release
+    needs: [deb, rpm]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect packages
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find artifacts -type f \( -name '*.deb' -o -name '*.rpm' \) \
+            -exec cp {} release-assets/ \;
+          ls -la release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

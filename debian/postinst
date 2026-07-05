@@ -1,0 +1,23 @@
+#!/bin/sh
+# Debian postinst: register AppImage Manager as the default handler for the
+# AppImage MIME types. Runs after files are in place, so the helper at
+# /usr/lib/app-image-manager/mime-register.sh is available.
+#
+# cargo-deb injects the usual #DEBHELPER# token handling; we keep the script
+# minimal and source the shared helper.
+set -e
+
+HELPER="/usr/lib/app-image-manager/mime-register.sh"
+
+case "$1" in
+    configure)
+        if [ -x "$HELPER" ]; then
+            "$HELPER" add || {
+                echo "app-image-manager: MIME registration failed, continuing" >&2
+            }
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+exit 0

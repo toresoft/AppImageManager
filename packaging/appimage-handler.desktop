@@ -1,0 +1,19 @@
+# MIME handler desktop entry installed system-wide by the .deb/.rpm packages.
+# It points at the distro-installed binary in /usr/bin (NOT the user copy in
+# ~/.local/bin), so clicking an AppImage in Dolphin opens the install prompt.
+#
+# This file is generated into the user's applications dir by `app-image-manager
+# setup` with the absolute Exec path resolved at runtime; this packaged version
+# just provides a sane system default.
+[Desktop Entry]
+Type=Application
+Name=AppImage Manager
+Name[it]=Gestore AppImage
+Comment=Install AppImages with a confirmation prompt
+Comment[it]=Installa le AppImage con una richiesta di conferma
+Exec=/usr/bin/app-image-manager handle %f
+Icon=application-x-executable
+NoDisplay=true
+Terminal=false
+MimeType=application/vnd.appimage;application/x-appimage;application/octet-stream;
+Categories=System;Utility;

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metainfo. Shown by software centers (Discover on KDE, GNOME
+  Software) when users browse the catalog. Keep the `<id>` aligned with the
+  .desktop filename (minus extension) so the centers can associate them.
+-->
+<component type="desktop-application">
+  <id>app-image-manager.desktop</id>
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>MIT</project_license>
+  <name>AppImage Manager</name>
+  <summary>KDE-native manager for AppImage files</summary>
+  <summary xml:lang="it">Gestore di AppImage nativo per KDE</summary>
+  <description>
+    <p>
+      AppImage Manager integrates AppImages into KDE Plasma. When you click an
+      AppImage in Dolphin, a confirmation dialog (kdialog) appears; on accept,
+      the AppImage is copied into <code>~/.local/bin</code> and a full KDE menu
+      entry is created (icons + <code>.desktop</code>), then the application is
+      launched.
+    </p>
+    <p xml:lang="it">
+      AppImage Manager integra le AppImage in KDE Plasma. Quando fai click su
+      un'AppImage in Dolphin appare una finestra di conferma (kdialog); se
+      accetti, l'AppImage viene copiata in <code>~/.local/bin</code> e viene
+      creata la voce di menù di KDE (icone + <code>.desktop</code>), poi
+      l'applicazione viene avviata.
+    </p>
+    <p>
+      Metadata is extracted directly from the AppImage squashfs payload via
+      <code>unsquashfs</code>; the AppImage is never executed during install.
+      Includes <code>list</code> and <code>uninstall</code> subcommands.
+    </p>
+  </description>
+  <launchable type="desktop-id">appimage-handler.desktop</launchable>
+  <url type="homepage">https://github.com/toresoft/app-image-manager</url>
+  <url type="bugtracker">https://github.com/toresoft/app-image-manager/issues</url>
+  <provides>
+    <binary>app-image-manager</binary>
+  </provides>
+  <categories>
+    <category>System</category>
+    <category>Utility</category>
+  </categories>
+  <keywords>
+    <keyword>appimage</keyword>
+    <keyword>install</keyword>
+    <keyword>kde</keyword>
+    <keyword>menu</keyword>
+  </keywords>
+  <releases>
+    <release version="0.1.0" date="2026-07-05">
+      <description>
+        <p>Initial release.</p>
+        <ul>
+          <li>Click-to-install via kdialog with KDE menu integration.</li>
+          <li>Metadata extraction from the squashfs payload (no AppImage execution).</li>
+          <li><code>list</code> and <code>uninstall</code> subcommands.</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>

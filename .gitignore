@@ -1,0 +1,7 @@
+/target
+# Local packaging artifacts (kept out; CI rebuilds them)
+*.deb
+*.rpm
+# Editor / OS cruft
+*.swp
+.DS_Store
