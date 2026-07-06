@@ -17,6 +17,26 @@ use crate::metadata::{AppImageMetadata, MetadataError, install_name};
 /// them and so we never touch unrelated entries.
 pub const MARKER_KEY: &str = "X-AppImage-Manager";
 
+/// Prefix used for the generated `.desktop` filenames.
+///
+/// AppImages expose their own `.desktop` from their mount point, and KDE
+/// Plasma deduplicates entries by filename. Namespacing ours avoids the
+/// collision that would otherwise hide our entry.
+pub const DESKTOP_PREFIX: &str = "appimage-manager-";
+
+/// Build the `.desktop` filename for a logical install `name`.
+fn desktop_file_name(name: &str) -> String {
+    format!("{DESKTOP_PREFIX}{name}.desktop")
+}
+
+/// Reverse of [`desktop_file_name`]: extract the logical `name` from a
+/// generated `.desktop` filename. Returns `None` if the file is not one of
+/// ours (wrong prefix / extension).
+fn name_from_desktop_file(file: &str) -> Option<String> {
+    let stem = file.strip_suffix(".desktop")?;
+    stem.strip_prefix(DESKTOP_PREFIX).map(str::to_string)
+}
+
 #[derive(Debug)]
 pub enum InstallError {
     AppImage(AppImageError),
@@ -129,7 +149,15 @@ fn install_from_metadata(
     copy_executable(appimage, &bin_path)?;
 
     // 2. Rewrite the .desktop entry.
-    let desktop_path = dirs.applications.join(format!("{name}.desktop"));
+    //
+    // The .desktop FILENAME is given a stable, namespaced prefix so it can
+    // never collide with the .desktop entry an AppImage exposes from its own
+    // mount point (/tmp/.mount_<app>/usr/share/applications/<name>.desktop).
+    // KDE Plasma deduplicates entries by filename: if our `zcode.desktop` in
+    // ~/.local/share/applications clashes with the mounted one, Plasma hides
+    // ours. A namespaced name (`appimage-manager-zcode.desktop`) sidesteps
+    // that and always shows up.
+    let desktop_path = dirs.applications.join(desktop_file_name(&name));
     let desktop = rewrite_desktop(&meta.desktop, &bin_path, &name, appimage, &display_name);
 
     // 3. Install icons (hicolor) before writing the .desktop so the Icon=
@@ -426,11 +454,10 @@ pub fn list() -> io::Result<Vec<InstalledApp>> {
         if d.get(MARKER_KEY) != Some("true") {
             continue;
         }
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
+        // Derive the logical name by stripping our namespace prefix from the
+        // filename (not the Name field, which may be localized or spaced).
+        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let name = name_from_desktop_file(file_name).unwrap_or_else(|| file_name.to_string());
         let display_name = d.get("Name").unwrap_or(&name).to_string();
         let binary = d
             .get("Exec")
@@ -451,7 +478,7 @@ pub fn list() -> io::Result<Vec<InstalledApp>> {
 /// Uninstall by name. Returns true if something was removed.
 pub fn uninstall(name: &str) -> Result<bool, InstallError> {
     let dirs = Dirs::ensure()?;
-    let desktop_path = dirs.applications.join(format!("{name}.desktop"));
+    let desktop_path = dirs.applications.join(desktop_file_name(name));
     if !desktop_path.exists() {
         return Ok(false);
     }
@@ -532,5 +559,20 @@ mod tests {
         );
         assert_eq!(out.get(MARKER_KEY), Some("true"));
         assert!(out.get("X-AppImage-Source").is_some());
+    }
+
+    #[test]
+    fn desktop_file_name_roundtrip() {
+        let f = desktop_file_name("zcode");
+        assert_eq!(f, "appimage-manager-zcode.desktop");
+        assert_eq!(name_from_desktop_file(&f).as_deref(), Some("zcode"));
+    }
+
+    #[test]
+    fn name_from_desktop_file_rejects_foreign() {
+        // Files without our prefix or extension must not parse as ours.
+        assert_eq!(name_from_desktop_file("zcode.desktop"), None);
+        assert_eq!(name_from_desktop_file("appimage-manager-zcode"), None);
+        assert_eq!(name_from_desktop_file("appimage-manager-zcode.png"), None);
     }
 }

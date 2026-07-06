@@ -49,6 +49,14 @@
     <keyword>menu</keyword>
   </keywords>
   <releases>
+    <release version="0.1.2" date="2026-07-06">
+      <description>
+        <p>Bugfix release.</p>
+        <ul>
+          <li>The installed .desktop entry is now saved with a namespaced filename (<code>appimage-manager-&lt;name&gt;.desktop</code>) instead of <code>&lt;name&gt;.desktop</code>. This avoids a collision with the .desktop entry an AppImage exposes from its own mount point, which caused KDE Plasma to hide the menu entry.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-07-06">
       <description>
         <p>Bugfix release.</p>
