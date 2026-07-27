@@ -1,0 +1,11 @@
+# The build context is only used to create the toolchain images — nothing is
+# COPYed in, the working tree is bind-mounted at run time. Excluding target/
+# keeps the context from being hundreds of megabytes.
+target/
+dist/
+.git/
+.github/
+.idea/
+.claude/
+*.deb
+*.rpm

@@ -1,4 +1,6 @@
 /target
+# Artifacts produced by docker/run.sh
+/dist
 # Local packaging artifacts (kept out; CI rebuilds them)
 *.deb
 *.rpm

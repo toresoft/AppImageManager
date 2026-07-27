@@ -44,6 +44,44 @@ cargo build --release
 # binario: target/release/app-image-manager
 ```
 
+### Build e test in container (senza toolchain sulla macchina)
+
+Se non hai Rust installato — o vuoi riprodurre esattamente l'ambiente della CI —
+usa l'infrastruttura in `docker/`. Funziona con **podman** o **docker**, e
+`docker/run.sh` non richiede nessuna implementazione di `compose`:
+
+```bash
+docker/run.sh test    # cargo fmt --check + clippy + cargo test  (job "build" della CI)
+docker/run.sh fmt     # riformatta i sorgenti con rustfmt
+docker/run.sh build   # binario release        -> dist/app-image-manager
+docker/run.sh deb     # pacchetto Debian/Ubuntu -> dist/*.deb
+docker/run.sh rpm     # pacchetto Fedora 44     -> dist/*.rpm
+docker/run.sh ci      # tutti e quattro, in sequenza
+docker/run.sh shell   # shell interattiva con il toolchain
+docker/run.sh clean   # svuota le cache (volumi cargo + target)
+```
+
+Con un `compose` disponibile, gli stessi servizi sono in `docker/compose.yaml`:
+
+```bash
+docker compose -f docker/compose.yaml run --rm test
+```
+
+Dettagli che vale la pena conoscere:
+
+- **Le immagini non contengono i sorgenti**: il working tree è montato in
+  `/src` a runtime, quindi una modifica al codice non richiede nessun rebuild
+  dell'immagine.
+- **`target/` è un volume, non la cartella dell'host**: dentro il container si
+  compila con un toolchain e una glibc diversi, e mescolare le due cose in una
+  sola directory costringerebbe a ricompilare tutto ad ogni cambio. Il tuo
+  `target/` locale resta intatto; gli artefatti finiscono in `dist/`.
+- **Immagini base allineate alla CI**: `ubuntu:22.04` per test e `.deb` (glibc
+  2.35, quindi il binario gira anche su 24.04+), `fedora:44` per l'`.rpm`. È la
+  distro a fissare la glibc del pacchetto, per questo sono pinnate.
+- **Limite di CPU**: di default il container usa metà dei core, così una
+  compilazione non blocca il desktop. Alza con `AIM_CPUS=16 docker/run.sh ci`.
+
 ## Installazione
 
 Copia il binario in una directory nel `PATH` (utente):
@@ -168,6 +206,11 @@ src/
 ├── launcher.rs    # avvio non bloccante (setsid)
 ├── kdialog.rs     # wrapper kdialog (yesno/msgbox/error/...)
 └── mime.rs        # setup handler MIME
+
+docker/
+├── Dockerfile     # toolchain Ubuntu 22.04 (+ cargo-deb) e Fedora 44 (+ cargo-generate-rpm)
+├── compose.yaml   # stessi servizi via compose
+└── run.sh         # driver podman/docker senza compose
 ```
 
 ## Pacchettizzazione (CI e pacchetti)

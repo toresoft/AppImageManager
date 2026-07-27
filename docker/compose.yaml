@@ -1,0 +1,122 @@
+# Build and test app-image-manager in containers.
+#
+#   docker compose -f docker/compose.yaml run --rm test
+#   docker compose -f docker/compose.yaml run --rm deb
+#
+# `docker/run.sh` does the same without needing a compose implementation
+# installed (this machine has bare podman) — see the README.
+#
+# Every service is one-shot: use `run --rm`, not `up`.
+
+name: app-image-manager
+
+x-common: &common
+  # The working tree is bind-mounted, so a code change needs no rebuild.
+  # `target/` is a named volume rather than the host directory: builds inside
+  # the container use a different toolchain and glibc than whatever the host
+  # has, and mixing the two in one directory means a full rebuild every time
+  # you switch. It also keeps the host's target/ untouched.
+  working_dir: /src
+  # Rootless podman maps container root to the invoking user, so files landing
+  # in dist/ are owned correctly. Under rootful docker, run as yourself:
+  #   AIM_USER="$(id -u):$(id -g)" docker compose ... run --rm test
+  user: "${AIM_USER:-0:0}"
+  environment:
+    # Same as CI: a warning fails the build.
+    RUSTFLAGS: "-D warnings"
+    CARGO_TERM_COLOR: always
+  # Keep a compile from taking the whole machine (docker/run.sh defaults to
+  # half the cores; pick a number that suits yours).
+  cpus: ${AIM_CPUS:-4}
+  init: true
+
+x-ubuntu: &ubuntu
+  <<: *common
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+    target: toolchain
+  volumes:
+    - ..:/src
+    - cargo-registry:/usr/local/cargo/registry
+    - target-ubuntu:/src/target
+
+services:
+  # The CI "build" job: formatting, lints and tests.
+  test:
+    <<: *ubuntu
+    command:
+      - bash
+      - -eux
+      - -c
+      - |
+        cargo fmt --all -- --check
+        cargo clippy --all-targets
+        cargo test --all
+
+  # Release binary, copied out to dist/.
+  build:
+    <<: *ubuntu
+    command:
+      - bash
+      - -eux
+      - -c
+      - |
+        cargo build --release --locked
+        ./target/release/app-image-manager --version
+        mkdir -p dist && cp target/release/app-image-manager dist/
+
+  # Interactive shell with the toolchain, for poking around.
+  shell:
+    <<: *ubuntu
+    command: ["bash"]
+    stdin_open: true
+    tty: true
+
+  # .deb package (Ubuntu 22.04 glibc baseline).
+  deb:
+    <<: *common
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: deb
+    volumes:
+      - ..:/src
+      - cargo-registry:/usr/local/cargo/registry
+      - target-ubuntu:/src/target
+    command:
+      - bash
+      - -eux
+      - -c
+      - |
+        cargo deb
+        mkdir -p dist && cp target/debian/*.deb dist/
+        dpkg-deb -c dist/*.deb
+
+  # .rpm package (Fedora 44 glibc). Separate target volume: a different
+  # toolchain must not share the Ubuntu build directory.
+  rpm:
+    <<: *common
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: rpm
+    volumes:
+      - ..:/src
+      - cargo-registry-fedora:/usr/local/cargo/registry
+      - target-fedora:/src/target
+    command:
+      - bash
+      - -eux
+      - -c
+      - |
+        cargo build --release --locked
+        cargo generate-rpm
+        mkdir -p dist && cp target/generate-rpm/*.rpm dist/
+        rpm -qpl dist/*.rpm
+
+volumes:
+  cargo-registry:
+  cargo-registry-fedora:
+  target-ubuntu:
+  target-fedora:
