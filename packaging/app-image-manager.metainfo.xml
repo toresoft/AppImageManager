@@ -49,6 +49,18 @@
     <keyword>menu</keyword>
   </keywords>
   <releases>
+    <release version="0.1.4" date="2026-07-27">
+      <description>
+        <p>Bugfix release.</p>
+        <ul>
+          <li>Fixed the duplicate menu entry. Applications that register themselves on first run — Electron does this from <code>app.setAsDefaultProtocolClient()</code> — write <code>~/.local/share/applications/&lt;name&gt;.desktop</code> pointing at the binary installed under <code>~/.local/bin</code>. Because 0.1.2 stored our entry under a different desktop file ID (<code>appimage-manager-&lt;name&gt;.desktop</code>), the two coexisted and KDE showed the application twice. The entry is written under the canonical ID again, so a self-registering application replaces it instead of adding a second one, and any remaining duplicate pointing at a binary we manage is removed on <code>install</code> and <code>list</code>. Existing installs are migrated automatically.</li>
+          <li><code>list</code> and <code>uninstall</code> now read a registry at <code>~/.local/share/app-image-manager/installed.list</code> instead of scanning desktop entries for a marker, so an application that rewrites its own entry can no longer make an install invisible.</li>
+          <li><code>[Desktop Action …]</code> groups are preserved (with their <code>Exec</code> rewritten to the installed binary). Dropping them while keeping the <code>Actions=</code> key that references them produced entries that violate the Desktop Entry specification.</li>
+          <li>Generated entries always carry <code>Type=Application</code> and never inherit a stale <code>Hidden=true</code>.</li>
+          <li>The icon cache is refreshed with <code>xdg-icon-resource forceupdate</code>, falling back to <code>gtk-update-icon-cache --ignore-theme-index</code>. The previous call failed silently because the per-user hicolor directory has no <code>index.theme</code>.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-07-27">
       <description>
         <p>Bugfix release.</p>

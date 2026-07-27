@@ -3,6 +3,7 @@
 //!
 //! Scope is per-user only: everything lives under `$HOME/.local`.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
@@ -12,29 +13,64 @@ use std::process::Command;
 use crate::appimage::{AppImage, AppImageError};
 use crate::desktop::DesktopEntry;
 use crate::metadata::{AppImageMetadata, MetadataError, install_name};
+use crate::registry::{Entry, Registry};
 
-/// Marker we add to generated desktop entries so `list`/`uninstall` can find
-/// them and so we never touch unrelated entries.
+/// Marker we add to generated desktop entries. It is informational (and used
+/// to recognise entries written by ≤0.1.2); the authoritative record of what
+/// we installed is [`crate::registry`].
 pub const MARKER_KEY: &str = "X-AppImage-Manager";
 
-/// Prefix used for the generated `.desktop` filenames.
+/// Prefix 0.1.2 gave to the generated `.desktop` filenames.
 ///
-/// AppImages expose their own `.desktop` from their mount point, and KDE
-/// Plasma deduplicates entries by filename. Namespacing ours avoids the
-/// collision that would otherwise hide our entry.
-pub const DESKTOP_PREFIX: &str = "appimage-manager-";
+/// It was meant to avoid a filename collision, but it changed the *desktop
+/// file ID*, which is what actually caused duplicate menu entries: an
+/// application that registers itself (Electron does this from
+/// `setAsDefaultProtocolClient`) writes `<name>.desktop`, and with ours living
+/// under a different ID the two coexisted instead of one replacing the other.
+/// We only keep the prefix to migrate away from it.
+const LEGACY_DESKTOP_PREFIX: &str = "appimage-manager-";
 
 /// Build the `.desktop` filename for a logical install `name`.
+///
+/// This is the *canonical* ID — the same one the application would pick for
+/// itself — so a self-registering app overwrites our entry rather than adding
+/// a second one. Losing our keys that way is harmless: the registry, not the
+/// `.desktop`, tracks the install.
 fn desktop_file_name(name: &str) -> String {
-    format!("{DESKTOP_PREFIX}{name}.desktop")
+    format!("{name}.desktop")
 }
 
-/// Reverse of [`desktop_file_name`]: extract the logical `name` from a
-/// generated `.desktop` filename. Returns `None` if the file is not one of
-/// ours (wrong prefix / extension).
-fn name_from_desktop_file(file: &str) -> Option<String> {
+/// Extract the logical `name` from a `.desktop` filename written by ≤0.1.2.
+/// Returns `None` if the file is not one of those (wrong prefix / extension).
+fn name_from_legacy_desktop_file(file: &str) -> Option<String> {
     let stem = file.strip_suffix(".desktop")?;
-    stem.strip_prefix(DESKTOP_PREFIX).map(str::to_string)
+    stem.strip_prefix(LEGACY_DESKTOP_PREFIX).map(str::to_string)
+}
+
+/// Extract the program from an `Exec=` value.
+///
+/// Per the spec the value is a quoted-argument list: a field may be wrapped in
+/// double quotes (necessary when the path contains spaces) with `\` escaping
+/// inside. Applications that self-register routinely emit the quoted form —
+/// `Exec="/home/u/.local/bin/zcode.AppImage" %U` — so a naive
+/// `split_whitespace().next()` would yield a path with a stray quote and fail
+/// to match ours.
+fn exec_program(exec: &str) -> Option<String> {
+    let s = exec.trim_start();
+    let Some(quoted) = s.strip_prefix('"') else {
+        return s.split_whitespace().next().map(str::to_string);
+    };
+    let mut out = String::new();
+    let mut chars = quoted.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(chars.next()?),
+            _ => out.push(c),
+        }
+    }
+    // Unterminated quote: take what we got rather than nothing.
+    Some(out)
 }
 
 #[derive(Debug)]
@@ -143,21 +179,20 @@ fn install_from_metadata(
         .map(str::to_string)
         .unwrap_or_else(|| name.clone());
 
+    // Open the registry first: it may migrate a ≤0.1.2 entry for this very
+    // app, and that migration writes the canonical `.desktop`. Doing it before
+    // step 4 makes sure the entry we are about to write wins.
+    let (mut reg, _) = open_registry(&dirs)?;
+
     // 1. Copy the AppImage binary to ~/.local/bin/<name>.AppImage
     let bin_name = format!("{name}.AppImage");
     let bin_path = dirs.bin.join(&bin_name);
     copy_executable(appimage, &bin_path)?;
 
-    // 2. Rewrite the .desktop entry.
-    //
-    // The .desktop FILENAME is given a stable, namespaced prefix so it can
-    // never collide with the .desktop entry an AppImage exposes from its own
-    // mount point (/tmp/.mount_<app>/usr/share/applications/<name>.desktop).
-    // KDE Plasma deduplicates entries by filename: if our `zcode.desktop` in
-    // ~/.local/share/applications clashes with the mounted one, Plasma hides
-    // ours. A namespaced name (`appimage-manager-zcode.desktop`) sidesteps
-    // that and always shows up.
-    let desktop_path = dirs.applications.join(desktop_file_name(&name));
+    // 2. Rewrite the .desktop entry, under the canonical file ID (see
+    // `desktop_file_name`).
+    let desktop_file = desktop_file_name(&name);
+    let desktop_path = dirs.applications.join(&desktop_file);
     let desktop = rewrite_desktop(&meta.desktop, &bin_path, &name, appimage, &display_name);
 
     // 3. Install icons (hicolor) before writing the .desktop so the Icon=
@@ -170,7 +205,19 @@ fn install_from_metadata(
         f.write_all(desktop.to_string().as_bytes())?;
     }
 
-    // 5. Refresh XDG caches (best-effort; helpers may be absent on minimal
+    // 5. Record the install, then drop any menu entry that duplicates it.
+    reg.upsert(Entry {
+        name: name.clone(),
+        display_name: display_name.clone(),
+        binary: bin_path.clone(),
+        desktop: desktop_file,
+        icon: name.clone(),
+        source: appimage.to_path_buf(),
+    });
+    reg.save()?;
+    prune_duplicate_entries(&dirs, &reg);
+
+    // 6. Refresh XDG caches (best-effort; helpers may be absent on minimal
     // installs, in which case we proceed).
     let _ = run_helper("update-desktop-database", [dirs.applications.as_os_str()]);
     let _ = refresh_icon_cache();
@@ -230,6 +277,17 @@ fn rewrite_desktop(
         // Some entries omit Exec; provide a sane default.
         d.set("Exec", &format!("{} %U", bin_path.display()));
     }
+    // Action groups (`[Desktop Action <id>]`) carry their own Exec, pointing
+    // at the same relative `AppRun`. Rewrite those too, otherwise the actions
+    // KDE shows in the launcher context menu would fail to start anything.
+    for group in &mut d.groups {
+        for (key, value) in &mut group.keys {
+            if key == "Exec" {
+                *value = rewrite_exec(value, bin_path);
+            }
+        }
+    }
+
     // Force a stable icon name so we control the icon set we installed.
     d.set("Icon", icon_name);
     // Make sure Name is set (we validated it in metadata extraction, but be
@@ -237,14 +295,20 @@ fn rewrite_desktop(
     if d.get("Name").is_none() {
         d.set("Name", display_name);
     }
-    // Markers so we can list/uninstall our entries only.
+    // `Type` is required by the spec; an entry without it is invalid and gets
+    // ignored. Upstream entries virtually always have it, but don't rely on it.
+    if d.get("Type").is_none() {
+        d.set("Type", "Application");
+    }
+    // `Hidden=true` means "this entry has been deleted" to every XDG
+    // implementation — we are deliberately (re)creating it.
+    d.remove("Hidden");
+    // Markers so an entry can be recognised as ours on inspection.
     d.set(MARKER_KEY, "true");
     d.set("X-AppImage-Source", &source_path.to_string_lossy());
-    // `TryExec` would hide the entry if the binary isn't executable; keep it
-    // only if it currently points somewhere sensible, otherwise drop it to
-    // avoid the entry being masked.
+    // `TryExec` would hide the entry if it pointed at a binary that is not
+    // executable; repoint it at the copy we just installed.
     if d.get("TryExec").is_some() {
-        d.remove("TryExec");
         d.set("TryExec", &bin_path.to_string_lossy());
     }
 
@@ -358,12 +422,29 @@ where
 }
 
 fn refresh_icon_cache() -> Result<(), (String, String)> {
-    // gtk-update-icon-cache works on theme dirs; for hicolor user dir:
+    // `xdg-icon-resource forceupdate` is the spec-blessed way to regenerate the
+    // theme cache and knows how to set up the theme directory correctly.
+    if run_helper("xdg-icon-resource", ["forceupdate", "--theme", "hicolor"]).is_ok() {
+        return Ok(());
+    }
+    // Fallback: drive gtk-update-icon-cache directly. `--ignore-theme-index` is
+    // required because the per-user hicolor directory usually has no
+    // `index.theme` of its own (it inherits the system one), and without the
+    // flag the tool refuses to build the cache.
     let Some(home) = std::env::var_os("HOME") else {
         return Err(("HOME".into(), "unset".into()));
     };
     let theme_dir = PathBuf::from(home).join(".local/share/icons/hicolor");
-    run_helper("gtk-update-icon-cache", [theme_dir.as_os_str()])
+    use std::ffi::OsStr;
+    run_helper(
+        "gtk-update-icon-cache",
+        [
+            OsStr::new("--force"),
+            OsStr::new("--ignore-theme-index"),
+            OsStr::new("--quiet"),
+            theme_dir.as_os_str(),
+        ],
+    )
 }
 
 /// Make sure KDE will actually pick up the `.desktop` we wrote under
@@ -434,73 +515,178 @@ fn rebuild_kde_sycoca(xdg_override: Option<&str>) {
     }
 }
 
-/// List installed AppImages (those whose .desktop has our marker).
-pub fn list() -> io::Result<Vec<InstalledApp>> {
-    let dirs = Dirs::ensure()?;
-    let mut out = Vec::new();
-    if !dirs.applications.exists() {
-        return Ok(out);
+/// Load the registry, first importing anything installed by ≤0.1.2.
+/// The flag reports whether the migration changed anything on disk.
+fn open_registry(dirs: &Dirs) -> io::Result<(Registry, bool)> {
+    let mut reg = Registry::load()?;
+    let migrated = migrate_legacy_entries(dirs, &mut reg);
+    if migrated {
+        reg.save()?;
     }
-    for entry in fs::read_dir(dirs.applications)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+    Ok((reg, migrated))
+}
+
+/// Tell the desktop environment to re-read the menu.
+fn refresh_menu(dirs: &Dirs) {
+    let _ = run_helper("update-desktop-database", [dirs.applications.as_os_str()]);
+    rebuild_kde_sycoca(None);
+}
+
+/// Import installs made by ≤0.1.2 — which recorded everything in a
+/// `appimage-manager-<name>.desktop` file — into the registry, and move their
+/// menu entry to the canonical file ID.
+///
+/// Rewriting under the canonical ID is what removes the duplicate for existing
+/// users: it lands on (and replaces) the `<name>.desktop` the application
+/// registered for itself, collapsing the two menu entries back into one.
+/// Returns whether anything changed.
+fn migrate_legacy_entries(dirs: &Dirs, reg: &mut Registry) -> bool {
+    let Ok(read_dir) = fs::read_dir(&dirs.applications) else {
+        return false;
+    };
+    let mut changed = false;
+    for dir_entry in read_dir.flatten() {
+        let path = dir_entry.path();
+        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let Some(name) = name_from_legacy_desktop_file(file_name) else {
             continue;
-        }
+        };
         let Ok(content) = fs::read_to_string(&path) else {
             continue;
         };
         let d = DesktopEntry::parse(&content);
         if d.get(MARKER_KEY) != Some("true") {
+            // Not ours despite the prefix — leave it alone.
             continue;
         }
-        // Derive the logical name by stripping our namespace prefix from the
-        // filename (not the Name field, which may be localized or spaced).
-        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        let name = name_from_desktop_file(file_name).unwrap_or_else(|| file_name.to_string());
-        let display_name = d.get("Name").unwrap_or(&name).to_string();
-        let binary = d
-            .get("Exec")
-            .map(|e| e.split_whitespace().next().unwrap_or("").to_string())
-            .map(PathBuf::from)
-            .unwrap_or_default();
-        out.push(InstalledApp {
+        let desktop_file = desktop_file_name(&name);
+        if fs::write(dirs.applications.join(&desktop_file), &content).is_err() {
+            continue;
+        }
+        let _ = fs::remove_file(&path);
+        reg.upsert(Entry {
+            display_name: d.get("Name").unwrap_or(&name).to_string(),
+            binary: d
+                .get("Exec")
+                .and_then(exec_program)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| dirs.bin.join(format!("{name}.AppImage"))),
+            desktop: desktop_file,
+            icon: d.get("Icon").unwrap_or(&name).to_string(),
+            source: d
+                .get("X-AppImage-Source")
+                .map(PathBuf::from)
+                .unwrap_or_default(),
             name,
-            display_name,
-            binary,
-            desktop: path,
-            xdg_warning: None,
         });
+        changed = true;
     }
-    Ok(out)
+    changed
+}
+
+/// Delete menu entries that duplicate an install of ours.
+///
+/// Applications commonly register themselves on first run — Electron does it
+/// from `app.setAsDefaultProtocolClient()`, writing
+/// `~/.local/share/applications/<app>.desktop` with an `Exec` pointing at
+/// whatever binary is running, which after our install is *our* copy under
+/// `~/.local/bin`. The result is a second, visually identical menu entry.
+///
+/// An entry whose `Exec` resolves to a binary we installed, and that is not
+/// the canonical entry we wrote for it, is by construction a duplicate of
+/// ours, so it is safe to drop. Returns the files removed.
+fn prune_duplicate_entries(dirs: &Dirs, reg: &Registry) -> Vec<PathBuf> {
+    let managed: HashSet<PathBuf> = reg.iter().map(|e| e.binary.clone()).collect();
+    let keep: HashSet<&str> = reg.iter().map(|e| e.desktop.as_str()).collect();
+    remove_entries_pointing_at(dirs, &managed, &keep)
+}
+
+/// Remove every `.desktop` in the applications dir whose `Exec` program is one
+/// of `binaries`, except those whose filename is listed in `keep`.
+fn remove_entries_pointing_at(
+    dirs: &Dirs,
+    binaries: &HashSet<PathBuf>,
+    keep: &HashSet<&str>,
+) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
+    if binaries.is_empty() {
+        return removed;
+    }
+    let Ok(read_dir) = fs::read_dir(&dirs.applications) else {
+        return removed;
+    };
+    for dir_entry in read_dir.flatten() {
+        let path = dir_entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("desktop") {
+            continue;
+        }
+        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        if keep.contains(file_name) {
+            continue;
+        }
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(program) = DesktopEntry::parse(&content)
+            .get("Exec")
+            .and_then(exec_program)
+        else {
+            continue;
+        };
+        if binaries.contains(&PathBuf::from(program)) && fs::remove_file(&path).is_ok() {
+            removed.push(path);
+        }
+    }
+    removed
+}
+
+/// List installed AppImages, per the registry.
+pub fn list() -> io::Result<Vec<InstalledApp>> {
+    let dirs = Dirs::ensure()?;
+    let (reg, migrated) = open_registry(&dirs)?;
+    // Listing is also a convenient moment to clear duplicates an application
+    // may have re-created since the last install — which makes `list` double
+    // as a repair command.
+    let pruned = prune_duplicate_entries(&dirs, &reg);
+    if migrated || !pruned.is_empty() {
+        refresh_menu(&dirs);
+    }
+    Ok(reg
+        .iter()
+        .map(|e| InstalledApp {
+            name: e.name.clone(),
+            display_name: e.display_name.clone(),
+            binary: e.binary.clone(),
+            desktop: dirs.applications.join(&e.desktop),
+            xdg_warning: None,
+        })
+        .collect())
 }
 
 /// Uninstall by name. Returns true if something was removed.
 pub fn uninstall(name: &str) -> Result<bool, InstallError> {
     let dirs = Dirs::ensure()?;
-    let desktop_path = dirs.applications.join(desktop_file_name(name));
-    if !desktop_path.exists() {
+    let (mut reg, _) = open_registry(&dirs)?;
+    let Some(entry) = reg.remove(name) else {
         return Ok(false);
-    }
-    let content = fs::read_to_string(&desktop_path)?;
-    let d = DesktopEntry::parse(&content);
+    };
 
-    // Remove the binary.
-    if let Some(bin) = d.get("Exec").and_then(|e| e.split_whitespace().next()) {
-        let bin = PathBuf::from(bin);
-        if bin.starts_with(&dirs.bin) && bin.exists() {
-            let _ = fs::remove_file(&bin);
-        }
+    // Remove the binary (only ever from our own bin dir).
+    if entry.binary.starts_with(&dirs.bin) && entry.binary.exists() {
+        let _ = fs::remove_file(&entry.binary);
     }
     // Remove icons across common sizes.
-    if let Some(icon) = d.get("Icon") {
-        uninstall_icons(icon);
+    if !entry.icon.is_empty() {
+        uninstall_icons(&entry.icon);
     }
-    // Remove the desktop entry itself.
-    fs::remove_file(&desktop_path)?;
+    // Remove our menu entry, plus any duplicate pointing at the same binary
+    // (an app that self-registered would otherwise leave a dead entry behind).
+    let _ = fs::remove_file(dirs.applications.join(&entry.desktop));
+    remove_entries_pointing_at(&dirs, &HashSet::from([entry.binary]), &HashSet::new());
+    reg.save()?;
 
-    let _ = run_helper("update-desktop-database", [dirs.applications.as_os_str()]);
     let _ = refresh_icon_cache();
+    refresh_menu(&dirs);
     Ok(true)
 }
 
@@ -562,17 +748,103 @@ mod tests {
     }
 
     #[test]
-    fn desktop_file_name_roundtrip() {
-        let f = desktop_file_name("zcode");
-        assert_eq!(f, "appimage-manager-zcode.desktop");
-        assert_eq!(name_from_desktop_file(&f).as_deref(), Some("zcode"));
+    fn desktop_file_name_is_canonical() {
+        // The ID an application would pick for itself, so a self-registering
+        // app replaces our entry instead of adding a second one.
+        assert_eq!(desktop_file_name("zcode"), "zcode.desktop");
     }
 
     #[test]
-    fn name_from_desktop_file_rejects_foreign() {
-        // Files without our prefix or extension must not parse as ours.
-        assert_eq!(name_from_desktop_file("zcode.desktop"), None);
-        assert_eq!(name_from_desktop_file("appimage-manager-zcode"), None);
-        assert_eq!(name_from_desktop_file("appimage-manager-zcode.png"), None);
+    fn name_from_legacy_desktop_file_roundtrip() {
+        assert_eq!(
+            name_from_legacy_desktop_file("appimage-manager-zcode.desktop").as_deref(),
+            Some("zcode")
+        );
+    }
+
+    #[test]
+    fn name_from_legacy_desktop_file_rejects_foreign() {
+        // Files without the 0.1.2 prefix or extension are not migration
+        // candidates.
+        assert_eq!(name_from_legacy_desktop_file("zcode.desktop"), None);
+        assert_eq!(
+            name_from_legacy_desktop_file("appimage-manager-zcode"),
+            None
+        );
+        assert_eq!(
+            name_from_legacy_desktop_file("appimage-manager-zcode.png"),
+            None
+        );
+    }
+
+    #[test]
+    fn exec_program_reads_plain_and_quoted_forms() {
+        assert_eq!(
+            exec_program("/home/u/.local/bin/zcode.AppImage --no-sandbox %U").as_deref(),
+            Some("/home/u/.local/bin/zcode.AppImage")
+        );
+        // The form Electron writes when it registers itself — the duplicate
+        // entry we must be able to recognise.
+        assert_eq!(
+            exec_program("\"/home/u/.local/bin/zcode.AppImage\" %U").as_deref(),
+            Some("/home/u/.local/bin/zcode.AppImage")
+        );
+        assert_eq!(
+            exec_program("\"/home/u/.local/bin/My App.AppImage\" %U").as_deref(),
+            Some("/home/u/.local/bin/My App.AppImage")
+        );
+        assert_eq!(
+            exec_program("  /usr/bin/foo").as_deref(),
+            Some("/usr/bin/foo")
+        );
+        assert_eq!(exec_program(""), None);
+    }
+
+    #[test]
+    fn rewrite_desktop_rewrites_action_execs() {
+        let src = DesktopEntry::parse(
+            "[Desktop Entry]\n\
+             Name=Foo\n\
+             Exec=AppRun %U\n\
+             Actions=new-window;\n\
+             \n\
+             [Desktop Action new-window]\n\
+             Name=New Window\n\
+             Exec=AppRun --new-window\n",
+        );
+        let out = rewrite_desktop(
+            &src,
+            Path::new("/home/u/.local/bin/foo.AppImage"),
+            "foo",
+            Path::new("/home/u/dl/Foo.AppImage"),
+            "Foo",
+        );
+        // The action group survives, with its Exec pointing at the installed
+        // binary rather than the unreachable relative AppRun.
+        assert_eq!(out.groups.len(), 1);
+        assert_eq!(
+            out.groups[0].keys,
+            vec![
+                ("Name".to_string(), "New Window".to_string()),
+                (
+                    "Exec".to_string(),
+                    "/home/u/.local/bin/foo.AppImage --new-window".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn rewrite_desktop_guarantees_type_and_clears_hidden() {
+        let src = DesktopEntry::parse("[Desktop Entry]\nName=Foo\nExec=AppRun\nHidden=true\n");
+        let out = rewrite_desktop(
+            &src,
+            Path::new("/home/u/.local/bin/foo.AppImage"),
+            "foo",
+            Path::new("/home/u/dl/Foo.AppImage"),
+            "Foo",
+        );
+        assert_eq!(out.get("Type"), Some("Application"));
+        assert_eq!(out.get("Hidden"), None);
     }
 }

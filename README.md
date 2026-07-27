@@ -117,11 +117,24 @@ Tutto sotto la home dell'utente (scope per-utente, niente `sudo`):
 | Voce di menù | `~/.local/share/applications/<nome>.desktop` |
 | Icone | `~/.local/share/icons/hicolor/<size>x<size>/apps/<nome>.png` |
 | Handler MIME | `~/.local/share/applications/appimage-handler.desktop` |
+| Registro installazioni | `~/.local/share/app-image-manager/installed.list` |
 
-Le voci di menù create da questo tool sono marcate con
-`X-AppImage-Manager=true` (più `X-AppImage-Source=<percorso originale>`), così
-`list` e `uninstall` riconoscono solo quelle gestite dal tool e non toccano
-altre entry.
+`list` e `uninstall` leggono il **registro**, non la cartella `applications`:
+è un file di testo INI-like che tiene nome, binario, `.desktop` e sorgente di
+ogni installazione. Le voci di menù restano marcate con
+`X-AppImage-Manager=true` (più `X-AppImage-Source=<percorso originale>`), ma è
+solo informativo.
+
+> **Perché il nome del `.desktop` è quello canonico (`<nome>.desktop`).**
+> Molte applicazioni si registrano da sole al primo avvio — le app Electron lo
+> fanno da `app.setAsDefaultProtocolClient()` — scrivendo
+> `~/.local/share/applications/<nome>.desktop` con un `Exec` che punta al
+> binario in esecuzione, cioè alla *nostra* copia in `~/.local/bin`. Usando lo
+> stesso ID quel file **sostituisce** il nostro invece di affiancarsi, e resta
+> una sola voce nel menù. La 0.1.2 usava `appimage-manager-<nome>.desktop`:
+> ID diverso, quindi due voci identiche. L'aggiornamento migra da solo le
+> installazioni vecchie, e ogni `install`/`list` rimuove le voci duplicate che
+> puntano a un binario gestito da noi.
 
 ## Come funziona (brevemente)
 
@@ -134,9 +147,10 @@ altre entry.
    il `.desktop` radice e le icone hicolor, senza spacchettare tutto né
    eseguire l'AppImage.
 4. **Reinstallazione**: copia l'eseguibile, riscrive `Exec=AppRun ...` in
-   `Exec=~/.local/bin/<nome>.AppImage ...`, aggiunge i marker, installa le
-   icone via `xdg-icon-resource --novendor` (con fallback a copia manuale),
-   aggiorna i database.
+   `Exec=~/.local/bin/<nome>.AppImage ...` (anche negli eventuali gruppi
+   `[Desktop Action ...]`, che vengono preservati come richiede la spec),
+   aggiunge i marker, installa le icone via `xdg-icon-resource --novendor`
+   (con fallback a copia manuale), aggiorna i database.
 5. **Avvio**: lancia l'AppImage installata in una nuova sessione (`setsid`)
    così sopravvive alla chiusura del processo chiamante.
 
@@ -149,6 +163,7 @@ src/
 ├── appimage.rs    # riconoscimento type 2 + offset squashfs (con validazione)
 ├── metadata.rs    # estrazione .desktop + icone via unsquashfs
 ├── desktop.rs     # parser/serializer .desktop (INI minimale)
+├── registry.rs    # registro delle installazioni (fonte di verità per list/uninstall)
 ├── installer.rs   # copia, rewrite .desktop, icone, refresh DB, list, uninstall
 ├── launcher.rs    # avvio non bloccante (setsid)
 ├── kdialog.rs     # wrapper kdialog (yesno/msgbox/error/...)

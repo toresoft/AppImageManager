@@ -12,6 +12,7 @@ mod kdialog;
 mod launcher;
 mod metadata;
 mod mime;
+mod registry;
 
 use std::path::Path;
 use std::process::ExitCode;

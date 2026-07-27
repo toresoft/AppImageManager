@@ -1,22 +1,40 @@
 //! Minimal `.desktop` entry parser/serializer.
 //!
-//! The Desktop Entry spec is a subset of INI: a single `[Desktop Entry]` group,
+//! The Desktop Entry spec is a subset of INI: a `[Desktop Entry]` group,
 //! `Key=Value` lines, comments start with `#`. We keep the implementation
 //! intentionally small: only what this tool needs (read the upstream entry,
 //! tweak a few keys, write a new one).
 //!
 //! Locale keys (`Key[lang]=...`) are preserved verbatim.
+//!
+//! Groups other than `[Desktop Entry]` — in practice `[Desktop Action <id>]`,
+//! the "New Window"/"New Private Window" style entries KDE shows in the
+//! launcher context menu — are preserved verbatim too. Dropping them while
+//! keeping the `Actions=` key that references them would produce an entry that
+//! violates the spec (§ Additional applications actions: every id listed in
+//! `Actions` must have a matching group).
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
+/// A group other than `[Desktop Entry]`, kept verbatim.
+#[derive(Debug, Clone)]
+pub struct Group {
+    /// Header text without the brackets, e.g. `Desktop Action new-window`.
+    pub name: String,
+    pub keys: Vec<(String, String)>,
+}
+
 /// A parsed `.desktop` file: ordered key/value entries within the
-/// `[Desktop Entry]` group.
+/// `[Desktop Entry]` group, plus any further groups.
 #[derive(Debug, Clone, Default)]
 pub struct DesktopEntry {
     /// Preserves insertion order for stable, diff-friendly output.
     pub keys: Vec<(String, String)>,
+    /// Additional groups, in file order. Not touched by [`Self::get`] /
+    /// [`Self::set`], which operate on the main group only.
+    pub groups: Vec<Group>,
 }
 
 impl DesktopEntry {
@@ -33,13 +51,21 @@ impl DesktopEntry {
             }
             if line.starts_with('[') && line.ends_with(']') {
                 in_main_group = line == "[Desktop Entry]";
-                continue;
-            }
-            if !in_main_group {
+                if !in_main_group {
+                    entry.groups.push(Group {
+                        name: line[1..line.len() - 1].to_string(),
+                        keys: Vec::new(),
+                    });
+                }
                 continue;
             }
             if let Some((k, v)) = split_kv(line) {
-                entry.keys.push((k, v));
+                if in_main_group {
+                    entry.keys.push((k, v));
+                } else if let Some(group) = entry.groups.last_mut() {
+                    group.keys.push((k, v));
+                }
+                // A key before any group header is malformed; drop it.
             }
         }
         entry
@@ -102,6 +128,12 @@ impl fmt::Display for DesktopEntry {
         for (k, v) in &self.keys {
             writeln!(f, "{k}={v}")?;
         }
+        for group in &self.groups {
+            writeln!(f, "\n[{}]", group.name)?;
+            for (k, v) in &group.keys {
+                writeln!(f, "{k}={v}")?;
+            }
+        }
         Ok(())
     }
 }
@@ -146,5 +178,26 @@ Exec=foo --open
         assert_eq!(e.get("Name"), Some("Foo"));
         assert_eq!(e.get("Bar"), Some("1"));
         assert!(e.get("Exec").is_none(), "must not pick up actions group");
+    }
+
+    #[test]
+    fn preserves_action_groups() {
+        let input = "\
+[Desktop Entry]
+Name=Foo
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=AppRun --new-window
+";
+        let e = DesktopEntry::parse(input);
+        assert_eq!(e.groups.len(), 1);
+        assert_eq!(e.groups[0].name, "Desktop Action new-window");
+        let out = e.to_string();
+        assert!(out.contains("[Desktop Action new-window]"));
+        assert!(out.contains("Exec=AppRun --new-window"));
+        // Re-parsing the output must yield the same shape.
+        assert_eq!(DesktopEntry::parse(&out).groups.len(), 1);
     }
 }
