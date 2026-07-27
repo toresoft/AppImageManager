@@ -66,8 +66,16 @@ app-image-manager setup
 
 Questo scrive `~/.local/share/applications/appimage-handler.desktop` (con
 `Exec=...app-image-manager handle %f`) e lo registra come default per
-`application/vnd.appimage`, `application/x-appimage` e (come fallback)
-`application/octet-stream` tramite `xdg-mime`.
+`application/vnd.appimage` e `application/x-appimage` tramite `xdg-mime`.
+
+> **Solo tipi MIME specifici delle AppImage.** Il tool *non* si registra su
+> `application/octet-stream`: è il tipo generico che il database freedesktop
+> assegna a qualsiasi file binario non riconosciuto (firmware, `.bin`, immagini
+> disco, dati sconosciuti), quindi rivendicarlo faceva comparire la richiesta di
+> installazione su file che non c'entravano nulla con le AppImage. Se hai
+> installato una versione precedente alla 0.1.3, l'aggiornamento del pacchetto —
+> o una nuova esecuzione di `app-image-manager setup` — rimuove l'associazione
+> obsoleta.
 
 > **Nota su Dolphin**: Dolphin può avere l'azione "Esegui" per i binari
 > eseguibili. Affinché il **click singolo** apra la conferma di installazione
@@ -204,7 +212,7 @@ Note:
 - La deregistrazione avviene in `prerm`/`%preun` (prima della cancellazione dei file), non in `postrm`/`%postun`, perché l'helper deve essere ancora presente sul disco.
 - L'helper è **idempotente**: marca il proprio blocco con `# BEGIN/END app-image-manager` e modifica solo le righe dei propri MIME type, preservando ogni altra associazione presente nel file.
 
-I MIME type registrati come default: `application/vnd.appimage`, `application/x-appimage`, `application/octet-stream` (come fallback).
+I MIME type registrati come default: `application/vnd.appimage`, `application/x-appimage`. `application/octet-stream` **non** viene registrato (è il fallback generico di ogni binario non riconosciuto); le registrazioni lasciate dalle versioni ≤ 0.1.2 vengono rimosse in fase di `add`/`remove`, senza toccare le associazioni `octet-stream` di altre applicazioni.
 
 ### Build locale dei pacchetti
 

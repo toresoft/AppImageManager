@@ -15,5 +15,5 @@ Exec=/usr/bin/app-image-manager handle %f
 Icon=application-x-executable
 NoDisplay=true
 Terminal=false
-MimeType=application/vnd.appimage;application/x-appimage;application/octet-stream;
+MimeType=application/vnd.appimage;application/x-appimage;
 Categories=System;Utility;

@@ -41,7 +41,7 @@ fn handle(file: &Path) -> ExitCode {
         show_error("AppImage Manager", "Il file non esiste.");
         return ExitCode::FAILURE;
     }
-    if !is_appimage_extension(file) && !looks_like_appimage(file) {
+    if !is_appimage(file) {
         show_error(
             "AppImage Manager",
             "Il file non sembra essere una AppImage valida.",
@@ -202,6 +202,12 @@ fn setup_cmd() -> ExitCode {
                     report.failed.join(", ")
                 );
             }
+            if !report.purged.is_empty() {
+                println!(
+                    "Associazioni troppo generiche rimosse: {}",
+                    report.purged.join(", ")
+                );
+            }
             println!(
                 "\nOra il click su un'AppImage in Dolphin aprirà la conferma di installazione."
             );
@@ -214,6 +220,38 @@ fn setup_cmd() -> ExitCode {
     }
 }
 
+/// Does this file actually look like an AppImage?
+///
+/// Content decides, never the name alone. The authoritative signal is the
+/// type-2 AppImage magic (`\x7fELF` … `AI\x02`). A few builds ship with the
+/// magic zeroed out, so we also accept an ELF binary *named* `*.AppImage` —
+/// but never a non-ELF file, whatever it is called.
+fn is_appimage(p: &Path) -> bool {
+    match read_header(p) {
+        Some(h) if is_appimage_magic(&h) => true,
+        Some(h) => is_elf(&h) && is_appimage_extension(p),
+        None => false,
+    }
+}
+
+/// First 11 bytes of the file, or `None` if it is unreadable or shorter.
+fn read_header(p: &Path) -> Option<[u8; 11]> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(p).ok()?;
+    let mut buf = [0u8; 11];
+    f.read_exact(&mut buf).ok()?;
+    Some(buf)
+}
+
+fn is_elf(header: &[u8; 11]) -> bool {
+    &header[0..4] == b"\x7fELF"
+}
+
+/// Magic-byte check (ELF + `AI\x02`) without the full squashfs scan.
+fn is_appimage_magic(header: &[u8; 11]) -> bool {
+    is_elf(header) && &header[8..10] == b"AI" && header[10] == 0x02
+}
+
 /// Cheap extension check.
 fn is_appimage_extension(p: &Path) -> bool {
     let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
@@ -221,19 +259,6 @@ fn is_appimage_extension(p: &Path) -> bool {
     };
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".appimage")
-}
-
-/// Cheap magic-byte check (ELF + AI\x02) without the full squashfs scan.
-fn looks_like_appimage(p: &Path) -> bool {
-    use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(p) else {
-        return false;
-    };
-    let mut buf = [0u8; 11];
-    if f.read_exact(&mut buf).is_err() {
-        return false;
-    }
-    &buf[0..4] == b"\x7fELF" && &buf[8..10] == b"AI" && buf[10] == 0x02
 }
 
 /// Best-effort display name for the confirmation prompt, derived from the
@@ -248,4 +273,69 @@ fn display_name_guess(p: &Path) -> String {
 fn show_error(title: &str, msg: &str) {
     let _ = kdialog::error(title, msg);
     eprintln!("{msg}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Write `bytes` to a uniquely named temp file and return its path.
+    fn temp_file(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aim-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(bytes).unwrap();
+        path
+    }
+
+    fn appimage_bytes() -> Vec<u8> {
+        let mut v = b"\x7fELF\x02\x01\x01\x00AI\x02".to_vec();
+        v.extend_from_slice(&[0u8; 32]);
+        v
+    }
+
+    #[test]
+    fn accepts_a_real_appimage() {
+        let p = temp_file("real.AppImage", &appimage_bytes());
+        assert!(is_appimage(&p));
+    }
+
+    #[test]
+    fn accepts_an_appimage_without_extension() {
+        let p = temp_file("no-extension", &appimage_bytes());
+        assert!(is_appimage(&p), "the magic alone must be enough");
+    }
+
+    #[test]
+    fn rejects_an_arbitrary_binary_blob() {
+        // The exact case the octet-stream association used to trigger on.
+        let p = temp_file(
+            "firmware.bin",
+            &[0xde, 0xad, 0xbe, 0xef, 0, 1, 2, 3, 4, 5, 6, 7],
+        );
+        assert!(!is_appimage(&p));
+    }
+
+    #[test]
+    fn rejects_a_non_elf_file_named_appimage() {
+        let p = temp_file("liar.AppImage", b"PK\x03\x04 not an appimage at all");
+        assert!(!is_appimage(&p), "the extension alone must not be enough");
+    }
+
+    #[test]
+    fn accepts_an_elf_named_appimage_without_magic() {
+        // Some builds zero the AppImage magic; the extension carries the intent.
+        let mut bytes = b"\x7fELF\x02\x01\x01\x00\x00\x00\x00".to_vec();
+        bytes.extend_from_slice(&[0u8; 32]);
+        let p = temp_file("stripped-magic.AppImage", &bytes);
+        assert!(is_appimage(&p));
+    }
+
+    #[test]
+    fn rejects_a_file_too_short_to_have_a_header() {
+        let p = temp_file("tiny.AppImage", b"\x7fELF");
+        assert!(!is_appimage(&p));
+    }
 }

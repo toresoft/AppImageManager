@@ -19,7 +19,12 @@
 set -u
 
 APP_ID="appimage-handler.desktop"
-MIME_TYPES="application/vnd.appimage application/x-appimage application/octet-stream"
+# Only AppImage-specific types. `application/octet-stream` must NOT appear
+# here: it is the generic fallback for every unrecognised binary blob, so
+# claiming it made the installer prompt trigger on non-AppImage files. It is
+# listed in OBSOLETE_MIME_TYPES instead, so upgrades clean up old registrations.
+MIME_TYPES="application/vnd.appimage application/x-appimage"
+OBSOLETE_MIME_TYPES="application/octet-stream"
 MIMEAPPS="/usr/share/applications/mimeapps.list"
 
 MARK_BEGIN="# BEGIN app-image-manager (do not edit, managed by package)"
@@ -31,6 +36,26 @@ log() {
 
 have() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# True when the line is a `mime=value` association for one of our MIME types
+# (current or obsolete) AND the value is our own desktop id. Associations the
+# user or another package pointed at a different application are never touched.
+is_managed_line() {
+    case "$1" in
+        *=*) : ;;
+        *) return 1 ;;
+    esac
+    _mime=${1%%=*}
+    _value=${1#*=}
+    _value=${_value%;}
+    [ "$_value" = "$APP_ID" ] || return 1
+    for _m in $MIME_TYPES $OBSOLETE_MIME_TYPES; do
+        if [ "$_mime" = "$_m" ]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 # Rewrite the [Default Applications] block of mimeapps.list so that it
@@ -78,11 +103,11 @@ update_mimeapps() {
                 continue
             fi
             if [ "$in_default" = yes ]; then
-                # Skip our own MIME types so we can re-add them cleanly.
-                case "$line" in
-                    application/vnd.appimage=*|application/x-appimage=*|application/octet-stream=*) : ;;
-                    *) printf '%s\n' "$line" ;;
-                esac
+                # Drop our own entries (including obsolete ones left by older
+                # versions) so we can re-add just the current set cleanly.
+                if ! is_managed_line "$line"; then
+                    printf '%s\n' "$line"
+                fi
             fi
         done < "$MIMEAPPS"
     } > "$tmp_default"
@@ -157,7 +182,11 @@ update_mimeapps() {
                 continue
             fi
             if [ "$emit" = yes ]; then
-                printf '%s\n' "$line"
+                # Same filter as above: other sections (e.g. [Added
+                # Associations]) may still carry an obsolete entry of ours.
+                if ! is_managed_line "$line"; then
+                    printf '%s\n' "$line"
+                fi
             fi
         done < "$MIMEAPPS"
     } > "$tmp"

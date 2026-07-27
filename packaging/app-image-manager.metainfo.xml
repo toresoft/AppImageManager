@@ -49,6 +49,16 @@
     <keyword>menu</keyword>
   </keywords>
   <releases>
+    <release version="0.1.3" date="2026-07-27">
+      <description>
+        <p>Bugfix release.</p>
+        <ul>
+          <li>AppImage Manager no longer claims <code>application/octet-stream</code>. That MIME type is the generic fallback for any unrecognised binary file, so registering it as the default handler made the install prompt appear for files that are not AppImages. Only <code>application/vnd.appimage</code> and <code>application/x-appimage</code> are registered now, and upgrading (or re-running <code>setup</code>) removes the stale association.</li>
+          <li>The <code>handle</code> command now validates file contents: a file is only treated as an AppImage if it carries the type-2 magic, or is an ELF binary named <code>*.AppImage</code>. The extension alone is no longer enough.</li>
+          <li>MIME deregistration no longer deletes <code>application/octet-stream</code> associations belonging to other applications.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-07-06">
       <description>
         <p>Bugfix release.</p>
