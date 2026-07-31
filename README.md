@@ -21,6 +21,8 @@ reale (ZCode).
 - **Niente esecuzione dell'AppImage durante l'installazione**: i metadati
   (`.desktop`, icone) sono estratti leggendo direttamente il payload squashfs
   tramite `unsquashfs`, mai eseguendo il file.
+- **Multilingua**: italiano, inglese e spagnolo. La lingua segue quella della
+  sessione (`LC_ALL` / `LC_MESSAGES` / `LANG`), con fallback all'inglese.
 - **Zero runtime pesanti**: solo Rust + `kdialog`. Nessun binding Qt.
 
 ## Requisiti
@@ -197,6 +199,7 @@ solo informativo.
 ```
 src/
 ├── main.rs        # entrypoint + dispatch comandi
+├── i18n.rs        # scelta della lingua da LC_ALL/LC_MESSAGES/LANG
 ├── cli.rs         # definizione CLI (clap)
 ├── appimage.rs    # riconoscimento type 2 + offset squashfs (con validazione)
 ├── metadata.rs    # estrazione .desktop + icone via unsquashfs
@@ -206,6 +209,9 @@ src/
 ├── launcher.rs    # avvio non bloccante (setsid)
 ├── kdialog.rs     # wrapper kdialog (yesno/msgbox/error/...)
 └── mime.rs        # setup handler MIME
+
+locales/           # cataloghi di traduzione (it/en/es), compilati nel binario
+build.rs           # ricompila quando cambia un catalogo
 
 docker/
 ├── Dockerfile     # toolchain Ubuntu 22.04 (+ cargo-deb) e Fedora 44 (+ cargo-generate-rpm)

@@ -1,6 +1,6 @@
 [package]
 name = "app-image-manager"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 description = "KDE-native manager for AppImage: click-to-install via kdialog, menu integration, list & uninstall"
 license = "MIT"
@@ -14,6 +14,11 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+# i18n: compiles the YAML catalogs under `locales/` into the binary and
+# provides `t!()`. It does not look at the environment on its own — `src/i18n.rs`
+# maps `LC_ALL`/`LC_MESSAGES`/`LANG` onto a shipped locale at startup, and
+# missing keys fall back to `en`.
+rust-i18n = "4"
 
 # ---------------------------------------------------------------------------
 # cargo-deb settings (Ubuntu/Debian .deb packaging)

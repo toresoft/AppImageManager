@@ -7,3 +7,6 @@
 # Editor / OS cruft
 *.swp
 .DS_Store
+.idea/
+# Machine-local MCP server endpoints
+.mcp.json

@@ -10,6 +10,8 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::Command;
 
+use rust_i18n::t;
+
 use crate::installer::Dirs;
 
 /// The desktop file name used for the MIME handler.
@@ -61,7 +63,10 @@ pub fn setup() -> io::Result<SetupReport> {
             Ok(()) => registered.push(mime.to_string()),
             Err(reason) => {
                 // Keep going: registering one is better than none.
-                eprintln!("warn: could not register {mime}: {reason}");
+                eprintln!(
+                    "{}",
+                    t!("warn_register_mime", mime = mime, reason = reason.as_str())
+                );
                 failed.push(mime.to_string());
             }
         }
@@ -121,7 +126,14 @@ fn purge_obsolete_associations() -> Vec<String> {
             continue;
         }
         if let Err(e) = fs::write(&path, new_content) {
-            eprintln!("warn: could not rewrite {}: {e}", path.display());
+            eprintln!(
+                "{}",
+                t!(
+                    "warn_rewrite_mimeapps",
+                    path = path.display().to_string(),
+                    err = e
+                )
+            );
             continue;
         }
         for mime in removed {
@@ -181,14 +193,32 @@ fn strip_obsolete_lines(content: &str) -> (String, Vec<String>) {
     (out, removed)
 }
 
+/// Presentation fields of the handler entry, translations included.
+///
+/// The desktop entry spec carries its own per-locale fields (`Name[xx]`,
+/// `Comment[xx]`) which the file manager resolves against the user's locale,
+/// so these are embedded statically rather than taken from the active runtime
+/// locale of *this* process — the entry outlives the process that wrote it.
+/// Only `Comment` is translated: the name is a brand, kept identical in every
+/// locale (`app_name` in the catalogs), and an untranslated `Name=` already
+/// serves as its own English value.
+///
+/// `packaging/appimage-handler.desktop` ships the same block for the
+/// system-wide entry; a test below keeps the two from drifting apart.
+const HANDLER_L10N: &str = "\
+Name=AppImage Manager
+Comment=Install AppImages with a confirmation prompt
+Comment[it]=Installa le AppImage con una richiesta di conferma
+Comment[es]=Instala AppImages con una solicitud de confirmación
+";
+
 /// Write the handler `.desktop` file pointing at `binary handle %f`.
 fn write_handler_desktop(dirs: &Dirs, binary: &std::path::Path) -> io::Result<()> {
     let path = dirs.applications.join(HANDLER_DESKTOP);
     let content = format!(
         "[Desktop Entry]\n\
          Type=Application\n\
-         Name=AppImage Manager\n\
-         Comment=Install AppImages with a confirmation prompt\n\
+         {HANDLER_L10N}\
          Exec={bin} handle %f\n\
          Icon=application-x-executable\n\
          NoDisplay=true\n\
@@ -218,6 +248,25 @@ fn register_default(mime: &str, handler: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The user-level entry is written at runtime, the system-level one ships
+    /// in the package. Different labels for the same handler show up in KDE's
+    /// "Open with" list depending on how the tool was installed.
+    #[test]
+    fn the_packaged_entry_carries_the_same_labels() {
+        let packaged = fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("packaging/appimage-handler.desktop"),
+        )
+        .expect("packaging/appimage-handler.desktop should be readable");
+
+        for line in HANDLER_L10N.lines() {
+            assert!(
+                packaged.lines().any(|packaged_line| packaged_line == line),
+                "the packaged entry is missing `{line}`"
+            );
+        }
+    }
 
     #[test]
     fn never_claims_the_generic_binary_type() {

@@ -4,9 +4,17 @@
 //! then clicking an AppImage in Dolphin asks for confirmation, installs it
 //! under `~/.local/bin` with a KDE menu entry, and launches it.
 
+// Load the translation catalogs (locales/*.yml) into the binary and expose
+// `t!`. Must live at crate root so the `t!` macro resolves `_rust_i18n_t`
+// here. This only sets `en` as the fallback for missing keys — the active
+// locale stays `en` until `i18n::init` reads the environment, since rust-i18n
+// itself never consults `LANG`/`LC_*`. See build.rs for the rebuild trigger.
+rust_i18n::i18n!("locales", fallback = "en");
+
 mod appimage;
 mod cli;
 mod desktop;
+mod i18n;
 mod installer;
 mod kdialog;
 mod launcher;
@@ -18,11 +26,15 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use clap::Parser;
+use rust_i18n::t;
 
 use cli::{Cli, Command};
 use installer::uninstall;
 
 fn main() -> ExitCode {
+    // Before anything user-facing: pick the language from the session.
+    i18n::init();
+
     let cli = Cli::parse();
     match cli.command {
         Command::Handle { file } => handle(&file),
@@ -37,31 +49,28 @@ fn main() -> ExitCode {
 ///
 /// Asks for confirmation via kdialog, installs, then launches.
 fn handle(file: &Path) -> ExitCode {
+    let app_name = t!("app_name").to_string();
+    let install_app = t!("install_app").to_string();
+
     // Sanity: file must exist and look like an AppImage before prompting.
     if !file.exists() {
-        show_error("AppImage Manager", "Il file non esiste.");
+        show_error(&app_name, t!("err_file_not_exist").as_ref());
         return ExitCode::FAILURE;
     }
     if !is_appimage(file) {
-        show_error(
-            "AppImage Manager",
-            "Il file non sembra essere una AppImage valida.",
-        );
+        show_error(&app_name, t!("err_not_appimage").as_ref());
         return ExitCode::FAILURE;
     }
 
     // Resolve a display name early so the prompt is meaningful.
     let display = display_name_guess(file);
-    let prompt = format!(
-        "Vuoi installare «{display}»?\n\n\
-         L'AppImage verrà copiata in ~/.local/bin e verrà creata la voce nel menù di KDE."
-    );
-    match kdialog::yesno("Installa AppImage", &prompt) {
+    let prompt = t!("prompt_install", name = display).to_string();
+    match kdialog::yesno(&install_app, &prompt) {
         Ok(kdialog::Answer::Yes) => {}
         Ok(kdialog::Answer::No) => return ExitCode::SUCCESS,
         Err(e) => {
             // Without a way to ask, fall back to stderr + failure.
-            eprintln!("kdialog error: {e}");
+            eprintln!("{}", t!("err_kdialog", err = e));
             return ExitCode::FAILURE;
         }
     }
@@ -70,21 +79,21 @@ fn handle(file: &Path) -> ExitCode {
         Ok(installed) => {
             // Compose the success message, appending the XDG hint when the
             // environment would hide the menu entry.
-            let mut msg = format!("«{}» installata con successo.", installed.display_name);
+            let mut msg = t!("msg_installed_ok", name = installed.display_name).to_string();
             if let Some(warn) = &installed.xdg_warning {
                 msg.push_str("\n\n");
                 msg.push_str(warn);
             }
-            let _ = kdialog::msgbox("AppImage Manager", &msg);
+            let _ = kdialog::msgbox(&app_name, &msg);
             // Launch in the background (best-effort).
             if let Err(e) = launcher::launch(&installed.binary) {
-                eprintln!("warn: avvio fallito: {e}");
+                eprintln!("{}", t!("warn_launch_failed", err = e));
             }
             ExitCode::SUCCESS
         }
         Err(e) => {
-            let msg = format!("Installazione non riuscita:\n{e}");
-            let _ = kdialog::error("AppImage Manager", &msg);
+            let msg = t!("err_install_failed", err = e).to_string();
+            let _ = kdialog::error(&app_name, &msg);
             eprintln!("{msg}");
             ExitCode::FAILURE
         }
@@ -96,17 +105,22 @@ fn install_silent(file: &Path) -> ExitCode {
     match installer::install(file) {
         Ok(installed) => {
             println!(
-                "Installata: {} ({})",
-                installed.display_name,
-                installed.binary.display()
+                "{}",
+                t!(
+                    "msg_installed_cli",
+                    name = installed.display_name,
+                    bin = installed.binary.display().to_string()
+                )
             );
             if let Some(warn) = &installed.xdg_warning {
-                eprintln!("\nAVVISO: {warn}");
+                // Blank line first: the warning is a wall of text following a
+                // one-line success message.
+                eprintln!("\n{}", t!("notice_prefix", warn = warn.as_str()));
             }
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("errore: {e}");
+            eprintln!("{}", t!("err_prefix", err = e));
             ExitCode::FAILURE
         }
     }
@@ -115,21 +129,33 @@ fn install_silent(file: &Path) -> ExitCode {
 fn list_cmd() -> ExitCode {
     match installer::list() {
         Ok(items) if items.is_empty() => {
-            println!("Nessuna AppImage installata.");
+            println!("{}", t!("msg_no_installs"));
             ExitCode::SUCCESS
         }
         Ok(items) => {
-            // Align columns for readability.
-            let name_w = items.iter().map(|i| i.name.len()).max().unwrap_or(4);
+            // Align columns for readability. Headers carry display-markup
+            // glyphs that may be multi-byte; column width is measured in
+            // chars, which is what the format pad spec counts too.
+            let hdr_name = t!("hdr_name").to_string();
+            let hdr_display = t!("hdr_display").to_string();
+            let hdr_binary = t!("hdr_binary").to_string();
+            let name_w = items
+                .iter()
+                .map(|i| i.name.chars().count())
+                .max()
+                .unwrap_or(0)
+                .max(hdr_name.chars().count());
             let disp_w = items
                 .iter()
-                .map(|i| i.display_name.len())
+                .map(|i| i.display_name.chars().count())
                 .max()
-                .unwrap_or(8);
+                .unwrap_or(0)
+                .max(hdr_display.chars().count());
             println!(
-                "{:<width_n$}  {:<width_d$}  BINARIO",
-                "NOME",
-                "NOME VISUALIZZATO",
+                "{:<width_n$}  {:<width_d$}  {}",
+                hdr_name,
+                hdr_display,
+                hdr_binary,
                 width_n = name_w,
                 width_d = disp_w
             );
@@ -146,17 +172,18 @@ fn list_cmd() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("errore: {e}");
+            eprintln!("{}", t!("err_prefix", err = e));
             ExitCode::FAILURE
         }
     }
 }
 
 fn uninstall_cmd(name: &str, yes: bool) -> ExitCode {
+    let app_name = t!("app_name").to_string();
     // Confirm via kdialog unless `--yes` was passed.
     if !yes {
-        let prompt = format!("Rimuovere «{name}» e la sua voce di menù?");
-        match kdialog::warningyesno("AppImage Manager", &prompt) {
+        let prompt = t!("prompt_uninstall", name = name).to_string();
+        match kdialog::warningyesno(&app_name, &prompt) {
             Ok(kdialog::Answer::No) => return ExitCode::SUCCESS,
             Ok(kdialog::Answer::Yes) => {}
             Err(_) => {
@@ -167,19 +194,19 @@ fn uninstall_cmd(name: &str, yes: bool) -> ExitCode {
 
     match uninstall(name) {
         Ok(true) => {
-            let _ = kdialog::msgbox("AppImage Manager", &format!("«{name}» rimossa."));
-            println!("rimossa: {name}");
+            let _ = kdialog::msgbox(&app_name, t!("msg_removed", name = name).as_ref());
+            println!("{}", t!("msg_removed_cli", name = name));
             ExitCode::SUCCESS
         }
         Ok(false) => {
-            let msg = format!("Nessuna AppImage installata con nome «{name}».");
-            let _ = kdialog::error("AppImage Manager", &msg);
+            let msg = t!("err_not_found", name = name).to_string();
+            let _ = kdialog::error(&app_name, &msg);
             eprintln!("{msg}");
             ExitCode::FAILURE
         }
         Err(e) => {
-            let msg = format!("Disinstallazione non riuscita:\n{e}");
-            let _ = kdialog::error("AppImage Manager", &msg);
+            let msg = t!("err_uninstall_failed", err = e).to_string();
+            let _ = kdialog::error(&app_name, &msg);
             eprintln!("{msg}");
             ExitCode::FAILURE
         }
@@ -189,33 +216,37 @@ fn uninstall_cmd(name: &str, yes: bool) -> ExitCode {
 fn setup_cmd() -> ExitCode {
     match mime::setup() {
         Ok(report) => {
-            println!("Handler registrato: {}", report.handler_desktop.display());
-            println!("Binario: {}", report.binary.display());
+            println!(
+                "{}",
+                t!(
+                    "setup_handler",
+                    path = report.handler_desktop.display().to_string()
+                )
+            );
+            println!(
+                "{}",
+                t!("setup_binary", path = report.binary.display().to_string())
+            );
             if !report.registered.is_empty() {
                 println!(
-                    "MIME registrati come default: {}",
-                    report.registered.join(", ")
+                    "{}",
+                    t!("setup_mime_registered", list = report.registered.join(", "))
                 );
             }
             if !report.failed.is_empty() {
                 println!(
-                    "MIME non registrati (verifica xdg-mime): {}",
-                    report.failed.join(", ")
+                    "{}",
+                    t!("setup_mime_failed", list = report.failed.join(", "))
                 );
             }
             if !report.purged.is_empty() {
-                println!(
-                    "Associazioni troppo generiche rimosse: {}",
-                    report.purged.join(", ")
-                );
+                println!("{}", t!("setup_purged", list = report.purged.join(", ")));
             }
-            println!(
-                "\nOra il click su un'AppImage in Dolphin aprirà la conferma di installazione."
-            );
+            println!("{}", t!("setup_done"));
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("setup non riuscito: {e}");
+            eprintln!("{}", t!("err_setup_failed", err = e));
             ExitCode::FAILURE
         }
     }

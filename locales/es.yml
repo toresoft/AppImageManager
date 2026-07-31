@@ -1,0 +1,64 @@
+# Spanish translations.
+# Structure mirrors locales/it.yml — see the format note there.
+_version: 1
+
+app_name: AppImage Manager
+install_app: Instalar AppImage
+
+# --- handle / install (interactive) -------------------------------------
+err_file_not_exist: El archivo no existe.
+err_not_appimage: El archivo no parece ser un AppImage válido.
+prompt_install: |-
+  ¿Quieres instalar «%{name}»?
+
+  El AppImage se copiará en ~/.local/bin y se creará la entrada en el menú de KDE.
+msg_installed_ok: «%{name}» instalada correctamente.
+err_install_failed: |-
+  Instalación fallida:
+  %{err}
+err_kdialog: "error de kdialog: %{err}"
+warn_launch_failed: "aviso: fallo al iniciar: %{err}"
+
+# --- install (silent / CLI) --------------------------------------------
+msg_installed_cli: "Instalada: %{name} (%{bin})"
+notice_prefix: "AVISO: %{warn}"
+err_prefix: "error: %{err}"
+
+# --- list --------------------------------------------------------------
+msg_no_installs: No hay ninguna AppImage instalada.
+hdr_name: NOMBRE
+hdr_display: NOMBRE MOSTRADO
+hdr_binary: BINARIO
+
+# --- uninstall ----------------------------------------------------------
+prompt_uninstall: ¿Eliminar «%{name}» y su entrada de menú?
+msg_removed: «%{name}» eliminada.
+msg_removed_cli: "eliminada: %{name}"
+err_not_found: No hay ninguna AppImage instalada con el nombre «%{name}».
+err_uninstall_failed: |-
+  Desinstalación fallida:
+  %{err}
+
+# --- setup --------------------------------------------------------------
+err_setup_failed: "setup fallido: %{err}"
+setup_handler: "Handler registrado: %{path}"
+setup_binary: "Binario: %{path}"
+setup_mime_registered: "MIME registrados como predeterminado: %{list}"
+setup_mime_failed: "MIME no registrados (verifica xdg-mime): %{list}"
+setup_purged: "Asociaciones demasiado genéricas eliminadas: %{list}"
+setup_done: |-
+
+  Al hacer clic en un AppImage en Dolphin se abrirá la confirmación de instalación.
+
+# --- installer.rs: XDG_DATA_DIRS warning --------------------------------
+xdg_warning: |-
+  KDE podría no mostrar la entrada de menú porque «%{path}» no está en XDG_DATA_DIRS.
+  Para hacerlo permanente, añade esta línea a ~/.bash_profile o ~/.profile:
+
+  export XDG_DATA_DIRS="$HOME/.local/share:$XDG_DATA_DIRS"
+
+  (La entrada ya está visible para la sesión actual.)
+
+# --- mime.rs: stderr diagnostics ---------------------------------------
+warn_register_mime: "no se pudo registrar %{mime}: %{reason}"
+warn_rewrite_mimeapps: "no se pudo reescribir %{path}: %{err}"

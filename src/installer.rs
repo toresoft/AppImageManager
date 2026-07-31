@@ -10,6 +10,8 @@ use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use rust_i18n::t;
+
 use crate::appimage::{AppImage, AppImageError};
 use crate::desktop::DesktopEntry;
 use crate::metadata::{AppImageMetadata, MetadataError, install_name};
@@ -486,13 +488,7 @@ fn ensure_kde_sees_user_applications(dirs: &Dirs) -> Option<String> {
     );
     rebuild_kde_sycoca(Some(&new_xdg));
 
-    Some(format!(
-        "KDE potrebbe non mostrare la voce di menù perché «{path}» non è in XDG_DATA_DIRS.\n\
-         Per renderlo permanente, aggiungi questa riga a ~/.bash_profile o ~/.profile:\n\n\
-         export XDG_DATA_DIRS=\"$HOME/.local/share:$XDG_DATA_DIRS\"\n\n\
-         (La voce è già visibile nella sessione corrente.)",
-        path = local_share_str
-    ))
+    Some(t!("xdg_warning", path = local_share_str).to_string())
 }
 
 /// Rebuild the KDE service-type cache (ksycoca), optionally overriding

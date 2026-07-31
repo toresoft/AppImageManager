@@ -1,0 +1,71 @@
+# Italian translations — source language of the project.
+# Add new keys here first; the other locale files mirror the structure.
+#
+# Format: rust-i18n `_version: 1`, one file per locale. The locale comes from
+# the *file name*, so the keys sit at the top level — do NOT wrap them in an
+# `it:` block, or every key would be read as `it.<key>` and `t!()` would echo
+# the key back instead of translating it.
+_version: 1
+
+# Brand name used as dialog title (kept stable across locales, but
+# translators may adapt it if needed).
+app_name: AppImage Manager
+install_app: Installa AppImage
+
+# --- handle / install (interactive) -------------------------------------
+err_file_not_exist: Il file non esiste.
+err_not_appimage: Il file non sembra essere una AppImage valida.
+prompt_install: |-
+  Vuoi installare «%{name}»?
+
+  L'AppImage verrà copiata in ~/.local/bin e verrà creata la voce nel menù di KDE.
+msg_installed_ok: «%{name}» installata con successo.
+err_install_failed: |-
+  Installazione non riuscita:
+  %{err}
+err_kdialog: "errore kdialog: %{err}"
+warn_launch_failed: "avviso: avvio fallito: %{err}"
+
+# --- install (silent / CLI) --------------------------------------------
+msg_installed_cli: "Installata: %{name} (%{bin})"
+notice_prefix: "AVVISO: %{warn}"
+err_prefix: "errore: %{err}"
+
+# --- list --------------------------------------------------------------
+msg_no_installs: Nessuna AppImage installata.
+hdr_name: NOME
+hdr_display: NOME VISUALIZZATO
+hdr_binary: BINARIO
+
+# --- uninstall ----------------------------------------------------------
+prompt_uninstall: Rimuovere «%{name}» e la sua voce di menù?
+msg_removed: «%{name}» rimossa.
+msg_removed_cli: "rimossa: %{name}"
+err_not_found: Nessuna AppImage installata con nome «%{name}».
+err_uninstall_failed: |-
+  Disinstallazione non riuscita:
+  %{err}
+
+# --- setup --------------------------------------------------------------
+err_setup_failed: "setup non riuscito: %{err}"
+setup_handler: "Handler registrato: %{path}"
+setup_binary: "Binario: %{path}"
+setup_mime_registered: "MIME registrati come default: %{list}"
+setup_mime_failed: "MIME non registrati (verifica xdg-mime): %{list}"
+setup_purged: "Associazioni troppo generiche rimosse: %{list}"
+setup_done: |-
+
+  Ora il click su un'AppImage in Dolphin aprirà la conferma di installazione.
+
+# --- installer.rs: XDG_DATA_DIRS warning --------------------------------
+xdg_warning: |-
+  KDE potrebbe non mostrare la voce di menù perché «%{path}» non è in XDG_DATA_DIRS.
+  Per renderlo permanente, aggiungi questa riga a ~/.bash_profile o ~/.profile:
+
+  export XDG_DATA_DIRS="$HOME/.local/share:$XDG_DATA_DIRS"
+
+  (La voce è già visibile nella sessione corrente.)
+
+# --- mime.rs: stderr diagnostics ---------------------------------------
+warn_register_mime: "impossibile registrare %{mime}: %{reason}"
+warn_rewrite_mimeapps: "impossibile riscrivere %{path}: %{err}"

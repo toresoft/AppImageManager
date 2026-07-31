@@ -49,6 +49,16 @@
     <keyword>menu</keyword>
   </keywords>
   <releases>
+    <release version="0.2.0" date="2026-07-31">
+      <description>
+        <p>Feature release.</p>
+        <ul>
+          <li>The interface is now translated. Italian, English and Spanish are shipped, and the language follows the session locale (<code>LC_ALL</code>, then <code>LC_MESSAGES</code>, then <code>LANG</code>), falling back to English for anything else. Previously every message was hardcoded in Italian.</li>
+          <li>The MIME handler desktop entry carries localised <code>Comment[…]</code> fields, so the file manager shows a description in the user's language. The system-wide entry shipped in the packages and the one written by <code>setup</code> now present identical labels.</li>
+          <li><code>list</code> aligns its columns by character count instead of byte length; accented names no longer shift the output.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-07-27">
       <description>
         <p>Bugfix release.</p>

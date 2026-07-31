@@ -5,12 +5,16 @@
 # This file is generated into the user's applications dir by `app-image-manager
 # setup` with the absolute Exec path resolved at runtime; this packaged version
 # just provides a sane system default.
+#
+# The Name/Comment block below is kept byte-identical to `HANDLER_L10N` in
+# src/mime.rs so both install routes present the same labels; a unit test there
+# fails if they drift.
 [Desktop Entry]
 Type=Application
 Name=AppImage Manager
-Name[it]=Gestore AppImage
 Comment=Install AppImages with a confirmation prompt
 Comment[it]=Installa le AppImage con una richiesta di conferma
+Comment[es]=Instala AppImages con una solicitud de confirmación
 Exec=/usr/bin/app-image-manager handle %f
 Icon=application-x-executable
 NoDisplay=true
